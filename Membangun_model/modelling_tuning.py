@@ -15,7 +15,7 @@ from sklearn.metrics import (
     precision_score,
     recall_score,
 )
-from sklearn.model_selection import RandomizedSearchCV
+from sklearn.model_selection import RandomizedSearchCV, train_test_split
 
 # --- Konfigurasi MLflow Tracking dengan DagsHub ---
 DAGSHUB_REPO_OWNER = "patuh"
@@ -44,10 +44,10 @@ mlflow.set_experiment("Diabetes Health Indicators")
 def main():
     # --- Muat Data ---
     try:
-        train_data = pd.read_csv("processed_data/train_processed.csv")
+        full_train_data = pd.read_csv("processed_data/train_processed.csv")
         test_data = pd.read_csv("processed_data/test_processed.csv")
         print(
-            f"Data train dimuat: {len(train_data)} baris. Data test dimuat: {len(test_data)} baris."
+            f"Data train lengkap dimuat: {len(full_train_data)} baris. Data test dimuat: {len(test_data)} baris."
         )
     except FileNotFoundError as e:
         print(f"ERROR: File data tidak ditemukan: {e}")
@@ -58,8 +58,24 @@ def main():
 
     TARGET_COLUMN = "Diabetes_012"
 
-    X_train = train_data.drop(TARGET_COLUMN, axis=1)
-    y_train = train_data[TARGET_COLUMN]
+    # --- Buat Subset Data Training ---
+    X_full_train = full_train_data.drop(TARGET_COLUMN, axis=1)
+    y_full_train = full_train_data[TARGET_COLUMN]
+
+    TRAIN_FRACTION = 0.20
+    desired_train_rows = int(len(X_full_train) * TRAIN_FRACTION)
+
+    print(
+        f"Mengurangi data train menjadi sekitar {desired_train_rows} baris ({TRAIN_FRACTION * 100}%) dengan stratifikasi."
+    )
+
+    X_train, _, y_train, _ = train_test_split(
+        X_full_train,
+        y_full_train,
+        train_size=desired_train_rows,
+        stratify=y_full_train,
+        random_state=42,
+    )
 
     X_test = test_data.drop(TARGET_COLUMN, axis=1)
     y_test = test_data[TARGET_COLUMN]
