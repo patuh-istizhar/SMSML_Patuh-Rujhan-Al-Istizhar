@@ -75,7 +75,7 @@ def main():
         "colsample_bytree": uniform(0.6, 1.0),
         "reg_alpha": uniform(0.0, 0.5),
         "reg_lambda": uniform(0.0, 0.5),
-        "device": "gpu",
+        "device": ["gpu"],
     }
 
     # --- Inisialisasi RandomizedSearchCV ---

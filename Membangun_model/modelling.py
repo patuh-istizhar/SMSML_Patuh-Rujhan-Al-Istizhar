@@ -44,7 +44,7 @@ with mlflow.start_run():
         "max_depth": -1,
         "random_state": 42,
         "n_jobs": -1,
-        "device": "gpu",
+        "device": ["gpu"],
     }
 
     print(f"Melatih LGBMClassifier dengan parameter: {params}")
