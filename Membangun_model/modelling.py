@@ -1,7 +1,7 @@
 import mlflow
 import mlflow.sklearn
 import pandas as pd
-from sklearn.ensemble import RandomForestClassifier
+from lightgbm import LGBMClassifier
 from sklearn.metrics import accuracy_score
 
 # --- Konfigurasi MLflow Tracking Lokal ---
@@ -38,18 +38,16 @@ with mlflow.start_run():
 
     # --- Inisialisasi dan Pelatihan Model dengan Parameter ---
     params = {
-        "n_estimators": 250,
-        "max_depth": 20,
-        "min_samples_split": 5,
-        "min_samples_leaf": 2,
-        "max_features": "sqrt",
-        "bootstrap": True,
-        "criterion": "entropy",
+        "n_estimators": 500,
+        "learning_rate": 0.05,
+        "num_leaves": 31,
+        "max_depth": -1,
         "random_state": 42,
+        "n_jobs": -1,
     }
 
-    print(f"Melatih RandomForestClassifier dengan parameter: {params}")
-    model = RandomForestClassifier(**params)
+    print(f"Melatih LGBMClassifier dengan parameter: {params}")
+    model = LGBMClassifier(**params)
 
     model.fit(X_train, y_train)
     print("Model selesai dilatih.")

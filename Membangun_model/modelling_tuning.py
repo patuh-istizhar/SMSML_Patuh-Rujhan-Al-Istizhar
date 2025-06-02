@@ -5,8 +5,8 @@ import joblib
 import matplotlib.pyplot as plt
 import mlflow
 import pandas as pd
-from scipy.stats import randint
-from sklearn.ensemble import RandomForestClassifier
+from lightgbm import LGBMClassifier
+from scipy.stats import randint, uniform
 from sklearn.metrics import (
     ConfusionMatrixDisplay,
     accuracy_score,
@@ -33,9 +33,7 @@ except Exception as e:
     print(
         "Pastikan DAGSHUB_REPO_OWNER dan DAGSHUB_REPO_NAME sudah benar di script ini."
     )
-    print(
-        "Juga, pastikan kredensial DagsHub Anda sudah diatur (environment variables atau `dagshub login`)."
-    )
+    print("Juga, pastikan kredensial DagsHub Anda sudah diatur.")
     exit()
 
 # Mengatur nama eksperimen MLflow
@@ -48,7 +46,9 @@ def main():
     try:
         train_data = pd.read_csv("processed_data/train_processed.csv")
         test_data = pd.read_csv("processed_data/test_processed.csv")
-        print("Data train dan test berhasil dimuat.")
+        print(
+            f"Data train dimuat: {len(train_data)} baris. Data test dimuat: {len(test_data)} baris."
+        )
     except FileNotFoundError as e:
         print(f"ERROR: File data tidak ditemukan: {e}")
         print(
@@ -64,27 +64,29 @@ def main():
     X_test = test_data.drop(TARGET_COLUMN, axis=1)
     y_test = test_data[TARGET_COLUMN]
 
-    # --- Definisi Ruang Parameter untuk RandomForestClassifier ---
+    # --- Definisi Ruang Parameter untuk LightGBM Classifier ---
     param_distributions = {
         "n_estimators": randint(100, 1000),
-        "max_features": ["sqrt", "log2", 0.6, 0.8, 1.0],
-        "max_depth": randint(5, 50),
-        "min_samples_split": randint(2, 20),
-        "min_samples_leaf": randint(1, 10),
-        "bootstrap": [True, False],
-        "criterion": ["gini", "entropy"],
+        "learning_rate": uniform(0.01, 0.2),
+        "num_leaves": randint(20, 100),
+        "max_depth": randint(5, 20),
+        "min_child_samples": randint(20, 100),
+        "subsample": uniform(0.6, 1.0),
+        "colsample_bytree": uniform(0.6, 1.0),
+        "reg_alpha": uniform(0.0, 0.5),
+        "reg_lambda": uniform(0.0, 0.5),
     }
 
     # --- Inisialisasi RandomizedSearchCV ---
     print("\nMemulai Hyperparameter Tuning dengan RandomizedSearchCV...")
     tuned_model = RandomizedSearchCV(
-        estimator=RandomForestClassifier(random_state=42),
+        estimator=LGBMClassifier(random_state=42),
         param_distributions=param_distributions,
         n_iter=50,
         cv=5,
         scoring="accuracy",
         n_jobs=-1,
-        verbose=1,
+        verbose=3,
         random_state=42,
     )
 
@@ -98,23 +100,22 @@ def main():
     print(f"Total waktu tuning: {tuning_total_time:.2f} detik")
 
     # --- Logging Model Terbaik ke MLflow ---
-    with mlflow.start_run(run_name="Tuned RandomForest Model"):
+    with mlflow.start_run(run_name="Tuned LightGBM Model"):
         print("\nLogging model terbaik dan metrik ke MLflow (DagsHub)...")
 
         best_params = tuned_model.best_params_
         best_estimator = tuned_model.best_estimator_
 
-        # Logging Parameter
         mlflow.log_params(best_params)
-        mlflow.log_param("tuning_iterations", 50)
-        mlflow.log_param("tuning_cv_folds", 5)
+        mlflow.log_param("tuning_iterations", tuned_model.n_iter)
+        mlflow.log_param("tuning_cv_folds", tuned_model.cv)
 
-        # Latih Ulang Model Terbaik
+        # Latih Ulang Model Terbaik pada seluruh data training
         train_start_time = time.time()
         best_estimator.fit(X_train, y_train)
         training_time = time.time() - train_start_time
 
-        # Prediksi dan Hitung Metrik
+        # Prediksi dan Hitung Metrik pada Test Set
         y_pred = best_estimator.predict(X_test)
 
         # Waktu Inferensi
@@ -128,7 +129,7 @@ def main():
         f1 = f1_score(y_test, y_pred, average="weighted", zero_division=0)
 
         # Ukuran Model
-        model_size_bytes = len(joblib.dumps(best_estimator))
+        model_size_bytes = len(joblib.dump(best_estimator))
 
         # Logging Metrik
         mlflow.log_metric("test_accuracy", accuracy)
@@ -147,12 +148,10 @@ def main():
         # Logging Model sebagai Artefak
         mlflow.sklearn.log_model(
             sk_model=best_estimator,
-            artifact_path="random_forest_model",
+            artifact_path="lightgbm_model",
             input_example=X_train.head(5),
         )
         print("Model dilog sebagai artefak.")
-
-        # Logging Artefak Tambahan
 
         # Artefak Tambahan 1: Confusion Matrix Plot
         cm = confusion_matrix(y_test, y_pred)
@@ -161,15 +160,15 @@ def main():
         )
         fig, ax = plt.subplots(figsize=(8, 8))
         disp.plot(cmap=plt.cm.Blues, ax=ax)
-        plt.title("Confusion Matrix for Best Model")
-        cm_plot_path = "confusion_matrix.png"
+        plt.title("Confusion Matrix for Best LightGBM Model")
+        cm_plot_path = "confusion_matrix_lightgbm.png"
         plt.savefig(cm_plot_path)
         mlflow.log_artifact(cm_plot_path)
         plt.close(fig)
         print("Confusion Matrix dilog sebagai artefak.")
 
         # Artefak Tambahan 2: Model dalam format Joblib
-        model_filename = "best_random_forest_model.joblib"
+        model_filename = "best_lightgbm_model.joblib"
         joblib.dump(best_estimator, model_filename)
         mlflow.log_artifact(model_filename)
         print(f"Model juga dilog dalam format {model_filename}.")
