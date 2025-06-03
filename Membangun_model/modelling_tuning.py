@@ -76,12 +76,14 @@ def main():
         "reg_alpha": uniform(0.0, 0.5),
         "reg_lambda": uniform(0.0, 0.5),
         "device": ["gpu"],
+        "max_bin": randint(200, 255),
+        "gpu_use_dp": False,
     }
 
     # --- Inisialisasi RandomizedSearchCV ---
     print("\nMemulai Hyperparameter Tuning dengan RandomizedSearchCV...")
     tuned_model = RandomizedSearchCV(
-        estimator=LGBMClassifier(random_state=42),
+        estimator=LGBMClassifier(random_state=42, device="gpu"),
         param_distributions=param_distributions,
         n_iter=50,
         cv=5,
