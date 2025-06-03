@@ -1,4 +1,3 @@
-import os
 import time
 
 import dagshub
@@ -17,53 +16,23 @@ from sklearn.metrics import (
     recall_score,
 )
 
-# --- Setup DagsHub MLflow Tracking ---
-DAGSHUB_REPO_OWNER = "patuh"
-DAGSHUB_REPO_NAME = "SMSML_Patuh-Rujhan-Al-Istizhar"
+# Konfigurasi DagsHub MLflow Tracking
+dagshub.init(
+    repo_owner="patuh", repo_name="SMSML_Patuh-Rujhan-Al-Istizhar", mlflow=True
+)
+mlflow.set_experiment("Diabetes Health Indicators")
 
-try:
-    dagshub.init(
-        repo_owner=DAGSHUB_REPO_OWNER, repo_name=DAGSHUB_REPO_NAME, mlflow=True
-    )
-    print(
-        f"MLflow tracking initialized with DagsHub repo: {DAGSHUB_REPO_OWNER}/{DAGSHUB_REPO_NAME}"
-    )
-except Exception as e:
-    print(f"Failed to initialize DagsHub MLflow tracking: {e}")
-    exit()
+# Muat dataset yang sudah diproses
+train_df = pd.read_csv("processed_data/train_processed.csv")
+test_df = pd.read_csv("processed_data/test_processed.csv")
 
-mlflow.set_experiment("Diabetes Health Indicators with Optuna")
+X_train = train_df.drop(columns="Diabetes_012")
+y_train = train_df["Diabetes_012"]
 
-
-# --- Load and Prepare Data ---
-def load_data():
-    train_path = "processed_data/train_processed.csv"
-    test_path = "processed_data/test_processed.csv"
-    if not (os.path.exists(train_path) and os.path.exists(test_path)):
-        print(
-            f"Data files not found. Please ensure '{train_path}' and '{test_path}' exist."
-        )
-        exit()
-
-    train_data = pd.read_csv(train_path)
-    test_data = pd.read_csv(test_path)
-    print(
-        f"Loaded train data: {len(train_data)} rows, test data: {len(test_data)} rows."
-    )
-
-    TARGET = "Diabetes_012"
-    X_train = train_data.drop(columns=[TARGET])
-    y_train = train_data[TARGET]
-    X_test = test_data.drop(columns=[TARGET])
-    y_test = test_data[TARGET]
-
-    return X_train, y_train, X_test, y_test
+X_test = test_df.drop(columns="Diabetes_012")
+y_test = test_df["Diabetes_012"]
 
 
-X_train, y_train, X_test, y_test = load_data()
-
-
-# --- Optuna Objective Function ---
 def objective(trial):
     params = {
         "boosting_type": "gbdt",
@@ -86,96 +55,54 @@ def objective(trial):
 
     model = LGBMClassifier(**params)
     model.fit(X_train, y_train)
-
     preds = model.predict(X_test)
     acc = accuracy_score(y_test, preds)
     return acc
 
 
-# --- Main Tuning and Logging ---
-def main():
-    study = optuna.create_study(direction="maximize")
-    print("Starting Optuna hyperparameter tuning...")
-    tuning_start = time.time()
-    study.optimize(objective, n_trials=50)
-    tuning_duration = time.time() - tuning_start
+# Jalankan tuning Optuna
+study = optuna.create_study(direction="maximize")
+start_tuning = time.time()
+study.optimize(objective, n_trials=50)
+tuning_duration = time.time() - start_tuning
 
-    best_params = study.best_trial.params
-    print(f"Best params: {best_params}")
-    print(f"Best accuracy (on test set): {study.best_value:.4f}")
-    print(f"Total tuning time: {tuning_duration:.2f} seconds")
+# Ambil model terbaik
+best_params = study.best_params
+model = LGBMClassifier(**best_params, device="gpu", random_state=42)
+start_train = time.time()
+model.fit(X_train, y_train)
+train_duration = time.time() - start_train
 
-    # Add fixed params for GPU and reproducibility
-    best_params.update(
-        boosting_type="gbdt",
-        device="gpu",
-        gpu_use_dp=False,
-        tree_learner="serial",
-        random_state=42,
-        n_jobs=-1,
-    )
+# Evaluasi
+preds = model.predict(X_test)
+acc = accuracy_score(y_test, preds)
+prec = precision_score(y_test, preds, average="weighted", zero_division=0)
+rec = recall_score(y_test, preds, average="weighted", zero_division=0)
+f1 = f1_score(y_test, preds, average="weighted", zero_division=0)
 
-    model = LGBMClassifier(**best_params)
+# Logging ke MLflow
+with mlflow.start_run(run_name="LightGBM with Optuna"):
+    mlflow.log_params(best_params)
+    mlflow.log_param("tuning_method", "optuna")
+    mlflow.log_param("n_trials", 50)
 
-    with mlflow.start_run(run_name="LightGBM Optuna Tuning"):
-        print("Training final model with best parameters...")
-        train_start = time.time()
-        model.fit(X_train, y_train)
-        training_time = time.time() - train_start
+    mlflow.log_metric("test_accuracy", acc)
+    mlflow.log_metric("test_precision", prec)
+    mlflow.log_metric("test_recall", rec)
+    mlflow.log_metric("test_f1_score", f1)
+    mlflow.log_metric("training_time_sec", train_duration)
+    mlflow.log_metric("tuning_time_sec", tuning_duration)
 
-        print("Evaluating model on test set...")
-        y_pred = model.predict(X_test)
+    # Simpan model
+    joblib.dump(model, "best_model.joblib")
+    mlflow.log_artifact("best_model.joblib")
 
-        accuracy = accuracy_score(y_test, y_pred)
-        precision = precision_score(y_test, y_pred, average="weighted", zero_division=0)
-        recall = recall_score(y_test, y_pred, average="weighted", zero_division=0)
-        f1 = f1_score(y_test, y_pred, average="weighted", zero_division=0)
-
-        # Inference time for 100 samples
-        inference_start = time.time()
-        model.predict(X_test.head(100))
-        inference_time_per_100 = time.time() - inference_start
-
-        # Save model size
-        model_path = "lightgbm_model.joblib"
-        joblib.dump(model, model_path)
-        model_size_bytes = os.path.getsize(model_path)
-
-        # Logging parameters & metrics
-        mlflow.log_params(best_params)
-        mlflow.log_metric("test_accuracy", accuracy)
-        mlflow.log_metric("test_precision", precision)
-        mlflow.log_metric("test_recall", recall)
-        mlflow.log_metric("test_f1_score", f1)
-        mlflow.log_metric("training_time_sec", training_time)
-        mlflow.log_metric("tuning_time_sec", tuning_duration)
-        mlflow.log_metric("inference_time_per_100_samples_sec", inference_time_per_100)
-        mlflow.log_metric("model_size_bytes", model_size_bytes)
-
-        print(f"Test accuracy: {accuracy:.4f}")
-
-        mlflow.sklearn.log_model(
-            sk_model=model,
-            artifact_path="model",
-            input_example=X_train.head(5),
-        )
-        mlflow.log_artifact(model_path)
-
-        # Confusion Matrix plot
-        cm = confusion_matrix(y_test, y_pred)
-        disp = ConfusionMatrixDisplay(
-            confusion_matrix=cm, display_labels=model.classes_
-        )
-        fig, ax = plt.subplots(figsize=(8, 8))
-        disp.plot(cmap=plt.cm.Blues, ax=ax)
-        plt.title("Confusion Matrix - LightGBM Optuna")
-        cm_path = "confusion_matrix.png"
-        plt.savefig(cm_path)
-        plt.close(fig)
-        mlflow.log_artifact(cm_path)
-
-        print("Run complete, artifacts and metrics logged to MLflow.")
-
-
-if __name__ == "__main__":
-    main()
+    # Simpan confusion matrix
+    cm = confusion_matrix(y_test, preds)
+    disp = ConfusionMatrixDisplay(cm, display_labels=model.classes_)
+    fig, ax = plt.subplots(figsize=(8, 6))
+    disp.plot(ax=ax, cmap="Blues")
+    plt.tight_layout()
+    plt.savefig("confusion_matrix.png")
+    mlflow.log_artifact("confusion_matrix.png")
+    plt.close(fig)
