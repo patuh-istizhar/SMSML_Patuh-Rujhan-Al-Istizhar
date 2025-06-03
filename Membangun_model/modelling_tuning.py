@@ -1,9 +1,10 @@
+import json
 import time
 
 import dagshub
-import joblib
 import matplotlib.pyplot as plt
 import mlflow
+import numpy as np
 import optuna
 import pandas as pd
 from lightgbm import LGBMClassifier
@@ -26,14 +27,13 @@ mlflow.set_experiment("Diabetes Health Indicators")
 train_df = pd.read_csv("processed_data/train_processed.csv")
 test_df = pd.read_csv("processed_data/test_processed.csv")
 
-# Stratified sampling for train and test sets
-train_df = train_df.groupby("Diabetes_012").sample(frac=0.5, random_state=42)
-test_df = test_df.groupby("Diabetes_012").sample(frac=0.5, random_state=42)
-
 X_train = train_df.drop(columns="Diabetes_012")
 y_train = train_df["Diabetes_012"]
 X_test = test_df.drop(columns="Diabetes_012")
 y_test = test_df["Diabetes_012"]
+
+# Prepare an input example for MLflow model signature
+input_example = X_train.head(1)
 
 
 def objective(trial, run_id):
@@ -53,20 +53,23 @@ def objective(trial, run_id):
         "n_jobs": -1,
     }
 
-    # Log each trial as a separate MLflow run
     with mlflow.start_run(run_name=f"LightGBM_Trial_{run_id}"):
         model = LGBMClassifier(**params)
         start_time = time.time()
         model.fit(X_train, y_train)
         train_time = time.time() - start_time
 
+        # Measure prediction time
+        start_predict = time.time()
         preds = model.predict(X_test)
+        predict_time = time.time() - start_predict
+
         acc = accuracy_score(y_test, preds)
         prec = precision_score(y_test, preds, average="weighted", zero_division=0)
         rec = recall_score(y_test, preds, average="weighted", zero_division=0)
         f1 = f1_score(y_test, preds, average="weighted", zero_division=0)
 
-        # Log params and metrics
+        # Log parameters and metrics
         mlflow.log_params(params)
         mlflow.log_param("trial_id", run_id)
         mlflow.log_metric("accuracy", acc)
@@ -74,67 +77,50 @@ def objective(trial, run_id):
         mlflow.log_metric("recall", rec)
         mlflow.log_metric("f1_score", f1)
         mlflow.log_metric("train_time_seconds", train_time)
+        mlflow.log_metric("predict_time_seconds", predict_time)
 
-        # Save model
-        joblib.dump(model, f"model_trial_{run_id}.joblib")
-        mlflow.log_artifact(f"model_trial_{run_id}.joblib")
+        # Log metrics as JSON
+        metrics_dict = {
+            "accuracy": acc,
+            "precision": prec,
+            "recall": rec,
+            "f1_score": f1,
+            "train_time_seconds": train_time,
+            "predict_time_seconds": predict_time,
+        }
+        mlflow.log_text(json.dumps(metrics_dict, indent=2), "metric_info.json")
 
-        # Save confusion matrix
+        # Log model with input example
+        mlflow.sklearn.log_model(
+            model, f"model_trial_{run_id}", input_example=input_example
+        )
+
+        # Log confusion matrix
         cm = confusion_matrix(y_test, preds)
         disp = ConfusionMatrixDisplay(cm, display_labels=model.classes_)
         fig, ax = plt.subplots(figsize=(8, 6))
         disp.plot(ax=ax, cmap="Blues")
         plt.tight_layout()
-        plt.savefig(f"cm_trial_{run_id}.png")
-        mlflow.log_artifact(f"cm_trial_{run_id}.png")
+        mlflow.log_figure(fig, "confusion_matrix.png")
+        plt.close(fig)
+
+        # Log feature importance plot
+        fig, ax = plt.subplots(figsize=(10, 6))
+        importances = model.feature_importances_
+        feature_names = X_train.columns
+        indices = np.argsort(importances)[::-1]
+        ax.bar(range(len(importances)), importances[indices], align="center")
+        ax.set_xticks(range(len(importances)))
+        ax.set_xticklabels(feature_names[indices], rotation=90)
+        ax.set_title(f"Feature Importance - Trial {run_id}")
+        plt.tight_layout()
+        mlflow.log_figure(fig, "feature_importance.png")
         plt.close(fig)
 
         return acc
 
 
-# Run Optuna for 15 trials
+# Run Optuna
 study = optuna.create_study(direction="maximize")
-start_tuning = time.time()
 for i in range(15):
     study.optimize(lambda trial: objective(trial, i + 1), n_trials=1)
-tuning_time = time.time() - start_tuning
-
-# Train and log the best model
-best_params = study.best_params
-final_model = LGBMClassifier(**best_params, device="cpu", random_state=42)
-start_time = time.time()
-final_model.fit(X_train, y_train)
-final_train_time = time.time() - start_time
-
-# Evaluate the best model
-preds = final_model.predict(X_test)
-acc = accuracy_score(y_test, preds)
-prec = precision_score(y_test, preds, average="weighted", zero_division=0)
-rec = recall_score(y_test, preds, average="weighted", zero_division=0)
-f1 = f1_score(y_test, preds, average="weighted", zero_division=0)
-
-# Log the best model in MLflow
-with mlflow.start_run(run_name="LightGBM_Final_Model"):
-    mlflow.log_params(best_params)
-    mlflow.log_param("tuning_method", "optuna")
-    mlflow.log_param("num_trials", 15)
-    mlflow.log_metric("accuracy", acc)
-    mlflow.log_metric("precision", prec)
-    mlflow.log_metric("recall", rec)
-    mlflow.log_metric("f1_score", f1)
-    mlflow.log_metric("train_time_seconds", final_train_time)
-    mlflow.log_metric("tuning_time_seconds", tuning_time)
-
-    # Save final model
-    joblib.dump(final_model, "final_model.joblib")
-    mlflow.log_artifact("final_model.joblib")
-
-    # Save confusion matrix for final model
-    cm = confusion_matrix(y_test, preds)
-    disp = ConfusionMatrixDisplay(cm, display_labels=final_model.classes_)
-    fig, ax = plt.subplots(figsize=(8, 6))
-    disp.plot(ax=ax, cmap="Blues")
-    plt.tight_layout()
-    plt.savefig("cm_final.png")
-    mlflow.log_artifact("cm_final.png")
-    plt.close(fig)
