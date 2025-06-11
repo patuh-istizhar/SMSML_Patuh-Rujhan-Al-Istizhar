@@ -1,0 +1,21 @@
+[workspace]
+authors = ["Patuh <patuh41@gmail.com>"]
+channels = ["conda-forge"]
+name = "SMSML_Patuh-Rujhan-Al-Istizhar"
+platforms = ["win-64", "linux-64"]
+version = "0.1.0"
+
+[tasks]
+
+[dependencies]
+python = "==3.12.7"
+mlflow = "==2.19.0"
+pandas = ">=2.3.0,<3"
+lightgbm = ">=4.6.0,<5"
+scikit-learn = ">=1.7.0,<2"
+optuna = ">=4.3.0,<5"
+matplotlib = ">=3.10.3,<4"
+numpy = ">=2.2.6,<3"
+
+[pypi-dependencies]
+dagshub = ">=0.5.10,<0.6"
